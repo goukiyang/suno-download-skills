@@ -1,0 +1,28 @@
+{
+  "package_version": "1.0.0",
+  "tool_version": "0.4.0-suno-studio.2",
+  "binary": {
+    "file": "skills/suno-native-download/tools/bin/sunox-studio-download",
+    "sha256": "804eb5431abc7fcc52852ea0cb048f0a6e2350707055797a5bf0404908b6e7c8",
+    "architecture": "arm64",
+    "format": "Mach-O",
+    "build_minimum_macos": "11.0",
+    "actual_execution_os": "macOS 26.2 arm64",
+    "older_macos_execution": "not tested; minimum load-command declaration is not compatibility proof",
+    "signature": "linker ad-hoc, no Developer ID/notarization",
+    "system_libraries": [
+      "IOKit.framework",
+      "CoreFoundation.framework",
+      "libiconv.2.dylib",
+      "libSystem.B.dylib"
+    ]
+  },
+  "requirements": {
+    "python": "3.9+ for installer/checker",
+    "ffmpeg": "ffmpeg and ffprobe required for full audio verification, not bundled",
+    "ego": "optional browser export only; separately installed and authorized, not bundled",
+    "chrome": "only explicit user-authorized single profile for initial import; no scan or automatic browser launch",
+    "rust": "1.88+ for source builds; fixed Cargo.lock, cache not bundled"
+  },
+  "other_platforms": "No Intel Mac, Windows or Linux prebuilt binary or live authentication/download validation. Source and source URLs are provided, not a promise of immediate support."
+}

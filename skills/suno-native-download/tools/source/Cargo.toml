@@ -1,0 +1,62 @@
+[package]
+name = "sunox"
+version = "0.4.0-suno-studio.2"
+edition = "2024"
+rust-version = "1.88"
+description = "Generate AI music from your terminal via direct Suno web workflows"
+license = "MIT"
+repository = "https://github.com/ctykwz/sunox"
+homepage = "https://github.com/ctykwz/sunox"
+readme = "README.md"
+keywords = ["suno", "music", "ai", "cli", "audio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "sunox"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "process", "net", "signal", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "stream"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+thiserror = "2"
+toml = "0.8"
+figment = { version = "0.10", features = ["toml", "env"] }
+comfy-table = "7"
+indicatif = "0.18"
+directories = "5"
+base64 = "0.22"
+futures-util = "0.3"
+fs2 = "0.4"
+id3 = "1"
+rookie = "0.5"
+rusqlite = "0.31"
+sha2 = "0.11"
+hmac = "0.12"
+sha2_10 = { package = "sha2", version = "0.10" }
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+self-replace = "1.5"
+self_update = { version = "1.0.0-rc.3", default-features = false, features = ["ureq", "rustls", "progress-bar", "github", "checksums", "compression-tar-gz", "compression-zip-deflate"] }
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", features = ["system-proxy"], default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+zip = { version = "8", default-features = false }
+
+[target.'cfg(not(windows))'.dependencies]
+flate2 = "1"
+libc = "0.2"
+tar = "0.4"
+
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

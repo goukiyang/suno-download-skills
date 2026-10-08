@@ -1,0 +1,379 @@
+use reqwest::Client;
+
+use super::{AuthRefreshLockGuard, AuthState, clerk_refresh_jwt, clerk_token_exchange};
+use crate::core::CliError;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshMode {
+    IfExpired,
+    ForceUnlessSavedChanged,
+}
+
+pub(crate) async fn refresh_state_if_needed(
+    client: &Client,
+    auth: &mut AuthState,
+) -> Result<(), CliError> {
+    refresh_state_if_needed_with_logging(client, auth, true).await
+}
+
+pub(crate) async fn refresh_state_if_needed_silent(
+    client: &Client,
+    auth: &mut AuthState,
+) -> Result<(), CliError> {
+    refresh_state_if_needed_with_logging(client, auth, false).await
+}
+
+async fn refresh_state_if_needed_with_logging(
+    client: &Client,
+    auth: &mut AuthState,
+    log: bool,
+) -> Result<(), CliError> {
+    if !auth.is_jwt_expired() {
+        return Ok(());
+    }
+
+    refresh_state_with_lock(client, auth, RefreshMode::IfExpired, log).await
+}
+
+pub(crate) async fn refresh_state_for_retry(
+    client: &Client,
+    auth: &mut AuthState,
+) -> Result<(), CliError> {
+    refresh_state_with_lock(client, auth, RefreshMode::ForceUnlessSavedChanged, true).await
+}
+
+pub(crate) async fn refresh_state_for_retry_silent(
+    client: &Client,
+    auth: &mut AuthState,
+) -> Result<(), CliError> {
+    refresh_state_with_lock(client, auth, RefreshMode::ForceUnlessSavedChanged, false).await
+}
+
+pub(crate) async fn refresh_state_explicit(
+    client: &Client,
+    auth: &mut AuthState,
+) -> Result<(), CliError> {
+    refresh_state_with_lock(client, auth, RefreshMode::ForceUnlessSavedChanged, true).await
+}
+
+async fn refresh_state_with_lock(
+    client: &Client,
+    auth: &mut AuthState,
+    mode: RefreshMode,
+    log: bool,
+) -> Result<(), CliError> {
+    if auth.clerk_client_cookie.is_none() {
+        return Err(CliError::AuthExpired);
+    }
+
+    let _refresh_guard = AuthRefreshLockGuard::acquire(auth).await?;
+    if let Ok(saved_auth) = AuthState::load() {
+        if !auth.matches_account_material(&saved_auth) {
+            return Err(active_auth_changed_error());
+        }
+        if let Some(reusable_auth) = reusable_saved_auth_after_lock(auth, saved_auth.clone(), mode)
+        {
+            *auth = reusable_auth;
+            return Ok(());
+        }
+        adopt_saved_request_metadata(auth, &saved_auth);
+    }
+    let refresh_origin = auth.clone();
+
+    if let (Some(cookie), Some(session_id)) = (&auth.clerk_client_cookie, &auth.session_id) {
+        if log {
+            eprintln!("{}", refresh_with_session_message(mode));
+        }
+        match clerk_refresh_jwt(
+            client,
+            cookie,
+            session_id,
+            auth.browser_environment.as_ref(),
+        )
+        .await
+        {
+            Ok(jwt) => {
+                auth.jwt = Some(jwt);
+                auth.save_after_refresh(&refresh_origin)?;
+                if log {
+                    eprintln!("JWT refreshed successfully");
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if log {
+                    eprintln!("JWT refresh failed: {e}");
+                }
+                Err(refresh_error(e))
+            }
+        }
+    } else if let Some(cookie) = &auth.clerk_client_cookie {
+        if log {
+            eprintln!("{}", recover_session_message(mode));
+        }
+        match clerk_token_exchange(client, cookie, auth.browser_environment.as_ref()).await {
+            Ok((session_id, jwt)) => {
+                auth.session_id = Some(session_id);
+                auth.jwt = Some(jwt);
+                auth.save_after_refresh(&refresh_origin)?;
+                if log {
+                    eprintln!("JWT refreshed successfully");
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if log {
+                    eprintln!("JWT refresh failed: {e}");
+                }
+                Err(refresh_error(e))
+            }
+        }
+    } else {
+        Err(CliError::AuthExpired)
+    }
+}
+
+fn adopt_saved_request_metadata(auth: &mut AuthState, saved_auth: &AuthState) {
+    auth.device_id.clone_from(&saved_auth.device_id);
+    if saved_auth.browser_environment.is_some() {
+        auth.browser_environment
+            .clone_from(&saved_auth.browser_environment);
+    }
+}
+
+fn active_auth_changed_error() -> CliError {
+    CliError::AuthChanged
+}
+
+fn refresh_error(error: CliError) -> CliError {
+    match error {
+        CliError::Api {
+            code: "clerk_exchange_rejected" | "clerk_refresh_rejected" | "no_jwt" | "no_session",
+            ..
+        } => CliError::AuthExpired,
+        CliError::Api {
+            code: "clerk_rate_limited",
+            ..
+        } => CliError::RateLimited,
+        error => error,
+    }
+}
+
+fn reusable_saved_auth_after_lock(
+    current_auth: &AuthState,
+    saved_auth: AuthState,
+    mode: RefreshMode,
+) -> Option<AuthState> {
+    if saved_auth.is_jwt_expired() {
+        return None;
+    }
+    if !current_auth.matches_account_material(&saved_auth) {
+        return None;
+    }
+
+    match mode {
+        RefreshMode::IfExpired => Some(saved_auth),
+        RefreshMode::ForceUnlessSavedChanged => {
+            if saved_auth.jwt != current_auth.jwt {
+                Some(saved_auth)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn refresh_with_session_message(mode: RefreshMode) -> &'static str {
+    match mode {
+        RefreshMode::IfExpired => "JWT expired, refreshing via Clerk...",
+        RefreshMode::ForceUnlessSavedChanged => "Refreshing JWT via Clerk session cookie...",
+    }
+}
+
+fn recover_session_message(mode: RefreshMode) -> &'static str {
+    match mode {
+        RefreshMode::IfExpired => "JWT expired, recovering Clerk session...",
+        RefreshMode::ForceUnlessSavedChanged => "Recovering Clerk session...",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
+
+    use crate::auth::AuthState;
+
+    use super::{
+        RefreshMode, adopt_saved_request_metadata, refresh_error, reusable_saved_auth_after_lock,
+    };
+    use crate::auth::BrowserEnvironment;
+    use crate::core::CliError;
+
+    #[test]
+    fn refresh_preserves_transport_errors_for_network_diagnosis() {
+        let error = CliError::Http(
+            reqwest::Client::new()
+                .get("http://[::1")
+                .build()
+                .expect_err("invalid URL must fail"),
+        );
+
+        assert!(matches!(refresh_error(error), CliError::Http(_)));
+    }
+
+    #[test]
+    fn refresh_maps_rejected_clerk_sessions_to_auth_expired() {
+        let error = CliError::Api {
+            code: "clerk_refresh_rejected",
+            message: "HTTP 401".into(),
+        };
+
+        assert!(matches!(refresh_error(error), CliError::AuthExpired));
+    }
+
+    #[test]
+    fn refresh_preserves_non_auth_semantic_errors() {
+        let error = CliError::Config("invalid auth state".into());
+
+        assert!(matches!(refresh_error(error), CliError::Config(_)));
+    }
+
+    #[test]
+    fn refresh_preserves_clerk_server_failures() {
+        let error = CliError::Api {
+            code: "clerk_refresh_failed",
+            message: "HTTP 503".into(),
+        };
+
+        assert!(matches!(
+            refresh_error(error),
+            CliError::Api {
+                code: "clerk_refresh_failed",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn refresh_maps_clerk_rate_limit_without_expiring_auth() {
+        let error = CliError::Api {
+            code: "clerk_rate_limited",
+            message: "HTTP 429".into(),
+        };
+
+        assert!(matches!(refresh_error(error), CliError::RateLimited));
+    }
+
+    fn jwt(exp: u64, subject: &str, marker: &str) -> String {
+        let header = BASE64URL.encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let claims = BASE64URL.encode(format!(
+            r#"{{"sub":"{subject}","exp":{exp},"jti":"{marker}"}}"#
+        ));
+        format!("{header}.{claims}.signature")
+    }
+
+    fn auth_with_jwt(jwt: String) -> AuthState {
+        AuthState {
+            jwt: Some(jwt),
+            clerk_client_cookie: Some("client-cookie".into()),
+            session_id: Some("session-id".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn expired_startup_refresh_reuses_fresh_saved_auth_after_lock() {
+        let current = auth_with_jwt(jwt(1, "user-a", "old"));
+        let saved = auth_with_jwt(jwt(4_102_444_800, "user-a", "new"));
+
+        let reusable =
+            reusable_saved_auth_after_lock(&current, saved.clone(), RefreshMode::IfExpired)
+                .expect("saved auth should be reusable");
+
+        assert_eq!(reusable.jwt, saved.jwt);
+    }
+
+    #[test]
+    fn forced_refresh_reuses_only_a_different_fresh_saved_jwt() {
+        let current = auth_with_jwt(jwt(4_102_444_800, "user-a", "old"));
+        let same = auth_with_jwt(current.jwt.clone().expect("current jwt"));
+        let newer = auth_with_jwt(jwt(4_102_444_800, "user-a", "new"));
+
+        assert!(
+            reusable_saved_auth_after_lock(&current, same, RefreshMode::ForceUnlessSavedChanged)
+                .is_none()
+        );
+        assert_eq!(
+            reusable_saved_auth_after_lock(
+                &current,
+                newer.clone(),
+                RefreshMode::ForceUnlessSavedChanged,
+            )
+            .expect("newer saved auth")
+            .jwt,
+            newer.jwt
+        );
+    }
+
+    #[test]
+    fn refresh_does_not_reuse_fresh_auth_from_different_account() {
+        let current = AuthState {
+            jwt: Some(jwt(1, "user-a", "old")),
+            session_id: Some("session-a".into()),
+            clerk_client_cookie: Some("cookie-a".into()),
+            ..Default::default()
+        };
+        let saved = AuthState {
+            jwt: Some(jwt(4_102_444_800, "user-b", "new")),
+            session_id: Some("session-a".into()),
+            clerk_client_cookie: Some("cookie-a".into()),
+            ..Default::default()
+        };
+
+        assert!(reusable_saved_auth_after_lock(&current, saved, RefreshMode::IfExpired).is_none());
+    }
+
+    #[test]
+    fn refresh_can_reuse_recovered_session_when_current_has_no_jwt() {
+        let current = AuthState {
+            session_id: Some("session-a".into()),
+            clerk_client_cookie: Some("cookie-a".into()),
+            ..Default::default()
+        };
+        let saved = AuthState {
+            jwt: Some(jwt(4_102_444_800, "user-a", "new")),
+            session_id: Some("session-a".into()),
+            clerk_client_cookie: Some("cookie-a".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            reusable_saved_auth_after_lock(&current, saved.clone(), RefreshMode::IfExpired)
+                .expect("same session should be reusable")
+                .jwt,
+            saved.jwt
+        );
+    }
+
+    #[test]
+    fn refresh_adopts_browser_metadata_recovered_by_another_process() {
+        let mut current = auth_with_jwt(jwt(1, "user-a", "old"));
+        current.device_id = Some("stale-device".into());
+        let saved = AuthState {
+            device_id: Some("persisted-device".into()),
+            browser_environment: Some(BrowserEnvironment {
+                browser_source: Some("chrome".into()),
+                user_agent: Some("Mozilla/5.0 Chrome/150.0.0.0".into()),
+                accept_language: Some("zh-CN,zh;q=0.9".into()),
+                client_hints: None,
+            }),
+            ..current.clone()
+        };
+
+        adopt_saved_request_metadata(&mut current, &saved);
+
+        assert_eq!(current.device_id, saved.device_id);
+        assert_eq!(current.browser_environment, saved.browser_environment);
+    }
+}

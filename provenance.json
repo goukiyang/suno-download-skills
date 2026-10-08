@@ -1,0 +1,98 @@
+{
+  "package_version": "1.0.0",
+  "tool_version": "0.4.0-suno-studio.2",
+  "upstream": {
+    "name": "Sunox",
+    "version": "0.3.3",
+    "url": "https://github.com/ctykwz/sunox",
+    "license": "MIT",
+    "license_file": "skills/suno-native-download/tools/LICENSE.sunox",
+    "upstream_commit": "not established for the full copied release tree; no invented tag relationship"
+  },
+  "base_extension": {
+    "version": "0.4.0-suno-studio.1",
+    "binary_sha256": "dd0adc49e7d20c5a28ed4290d67eaa9917944a37d7b8eb235f5a78cf3e0a541c",
+    "live_verified": true
+  },
+  "studio_protocol_reference": {
+    "url": "https://github.com/paperfoot/suno-cli/blob/6d28c67a733b32183a80d81306bf0013f46b00b7/src/api/downloads.rs",
+    "commit": "6d28c67a733b32183a80d81306bf0013f46b00b7",
+    "copied_code": false,
+    "use": "independently implemented Studio GET schema reference"
+  },
+  "official_entitlement_reference": "https://help.suno.com/en/articles/13876865",
+  "skills": [
+    {
+      "name": "suno-native-download",
+      "version": "1.0.0",
+      "adaptation": "new standalone download guidance; references own verified extension"
+    },
+    {
+      "name": "suno-bgm-workflow-portable",
+      "version": "1.1.1+portable.1",
+      "source_version": "1.1.1",
+      "adaptation": "new concise portable derivative of local workflow, private context removed"
+    },
+    {
+      "name": "suno-studio-browser-export",
+      "version": "1.0.0",
+      "ego_source_reference_version": "2.0.1",
+      "adaptation": "own interface guidance; no vendor manual redistribution; helper 1.0.0 has no independent live acceptance"
+    }
+  ],
+  "portable_source_changes": [
+    {
+      "file": "Cargo.lock",
+      "sha256": "0d88b6b35847441f6923d9c94600028ea69c7f43e1d88df696259b21ba7f5b03",
+      "original_sha256": "995e50b914d495db51f3b6afb8802c14275eb859042174ab50f64ff61e347433"
+    },
+    {
+      "file": "Cargo.toml",
+      "sha256": "dab2b12a134e3fb393f9b13783a6e88e8fd737215d4cc98a1191e2c7ba6ffd27",
+      "original_sha256": "fe31e270c19e231c1e5c893ddc7a5f354cb43017a9d7d0f8a136910daa28b01c"
+    },
+    {
+      "file": "assets/upstream-agent-skill.template.txt",
+      "sha256": "182ea1a1ac463c6e2f63864d920ab412f5901ad632a2e2ae8fc40b55ad484480",
+      "original_sha256": null
+    },
+    {
+      "file": "src/auth/browser.rs",
+      "sha256": "e203f0e32bc356814e28816bfb9a6253ccd0d17fdc97bc7a6b22f6086306dfea",
+      "original_sha256": "c90885b2cc2d3d209e6f4700ae6fc1198890adafd95c38711188a086b4279785"
+    },
+    {
+      "file": "src/auth/mod.rs",
+      "sha256": "768df65efea42213f5a2278aae289de4a35d5d087ac9e22151c09ced79c2d4c6",
+      "original_sha256": "05f303f8932245a6af368838d4b03ecf3a41696cd8f375816b5e2910b3be15d5"
+    },
+    {
+      "file": "src/commands/agent/skill.rs",
+      "sha256": "c7bb5679c5749fc48de23aad7d0303cba9a59fd3776bf10559a91c53effbc6cd",
+      "original_sha256": "7b5a9df0d8e941825c6e5c8881aeea0b1ea6deefe0c4542a3d5dbd7dd3b918a5"
+    },
+    {
+      "file": "src/commands/studio_download.rs",
+      "sha256": "1deed30f339fd707ffdfe976eaa213053fda88456658565afe412132bd2e4fd3",
+      "original_sha256": "ac8c9ba746481055042c8690023c94e6142fe2de84d37012ed0485a52a3b1fab"
+    },
+    {
+      "file": "src/main.rs",
+      "sha256": "d00fbb4462402222f437ceabb47003fe201249dc8dcb08bb1bb3d2f52ec84b86",
+      "original_sha256": "439fadea20c09edab625862ce6c373c45fca66cda40696063830408ec8d3bce4"
+    }
+  ],
+  "source_scope": "Complete build-required Sunox source/assets and fixed Cargo.lock. General modules remain for cross-module build dependencies but main always enters the Studio-only dispatcher, even after rename. No generation, solver or Library download command exposed.",
+  "dependency_licenses": {
+    "inventory": "third-party-notices.json",
+    "scope": "resolved macOS arm64 dependency graph, 301 packages. Four absent crate notices supplemented from recorded upstream license URLs, not represented as exact tagged-source snapshots. Other-platform dependency graphs require their own license review."
+  },
+  "privacy": "No credentials, real accounts, audio, private logs, dependency caches or compiler targets are included.",
+  "source_asset_rename": {
+    "from": "assets/SKILL.md",
+    "to": "assets/upstream-agent-skill.template.txt",
+    "content_sha256_unchanged": "182ea1a1ac463c6e2f63864d920ab412f5901ad632a2e2ae8fc40b55ad484480",
+    "include_reference": "src/commands/agent/skill.rs",
+    "purpose": "Non-discoverable upstream embedded template, retained as unchanged licensed build input only. No fourth installable SKILL.md."
+  }
+}

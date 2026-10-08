@@ -1,0 +1,756 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Number, Value};
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BillingInfo {
+    pub credits: u64,
+    pub total_credits_left: u64,
+    pub monthly_usage: u64,
+    pub monthly_limit: u64,
+    pub is_active: bool,
+    pub plan: Plan,
+    /// Current Web uses a string array here for plan-gated actions. The typed
+    /// wrapper also preserves older objects and unknown future shapes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_features: Option<AccessibleFeatures>,
+    pub models: Vec<Model>,
+    pub period: String,
+    pub renews_on: Option<String>,
+    #[serde(default)]
+    pub remaster_model_types: Vec<RemasterModelInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_usage: Option<DownloadUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_credit_packs: Option<Vec<DownloadCreditPack>>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// Account/session gates used by the Web client in addition to billing model
+/// capabilities. Values remain untyped so a newly shaped unrelated flag does
+/// not make the whole session response unreadable.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SessionInfo {
+    #[serde(default)]
+    pub flags: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub roles: BTreeMap<String, Value>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl SessionInfo {
+    pub fn flag_enabled(&self, name: &str) -> bool {
+        self.flags.get(name).and_then(Value::as_bool) == Some(true)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DownloadUsage {
+    pub current_period_downloads_limit: u64,
+    pub current_period_downloads_used: u64,
+    pub additional_download_remaining: u64,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DownloadCreditPack {
+    pub id: String,
+    pub amount: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_amount: Option<PriceAmount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_currency_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_usd: Option<Number>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// Billing returns prices as either JSON numbers or decimal strings. Preserve
+/// their wire type and decimal precision, including trailing zeroes in strings.
+/// JSON numbers use serde_json's arbitrary_precision representation.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum PriceAmount {
+    Number(Number),
+    DecimalString(String),
+}
+
+impl<'de> Deserialize<'de> for PriceAmount {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Value::deserialize(deserializer)? {
+            Value::Number(number) => Ok(Self::Number(number)),
+            Value::String(decimal) if is_decimal_amount(&decimal) => {
+                Ok(Self::DecimalString(decimal))
+            }
+            _ => Err(serde::de::Error::custom(
+                "price amount must be a JSON number or decimal string",
+            )),
+        }
+    }
+}
+
+fn is_decimal_amount(value: &str) -> bool {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let (integer, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, None), |(integer, fraction)| {
+            (integer, Some(fraction))
+        });
+    let is_digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    is_digits(integer) && fraction.is_none_or(is_digits)
+}
+
+/// Account-scoped feature gates returned by billing info.
+///
+/// Suno has returned both a current string array and legacy keyed objects.
+/// Keeping the raw value makes account readback forward-compatible while the
+/// `contains` helper centralizes fail-closed feature checks.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct AccessibleFeatures(Value);
+
+impl AccessibleFeatures {
+    pub fn contains(&self, name: &str) -> bool {
+        self.enabled_names().any(|candidate| candidate == name)
+    }
+
+    pub fn enabled_names(&self) -> impl Iterator<Item = &str> {
+        let mut names = Vec::new();
+        match &self.0 {
+            Value::Array(features) => {
+                for feature in features {
+                    match feature {
+                        Value::String(name) => names.push(name.as_str()),
+                        Value::Object(fields) if feature_object_is_enabled(fields) => {
+                            if let Some(name) = fields.get("name").and_then(Value::as_str) {
+                                names.push(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Value::Object(features) => {
+                for (name, enabled) in features {
+                    if enabled.as_bool() == Some(true) {
+                        names.push(name.as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+        names.into_iter()
+    }
+}
+
+fn feature_object_is_enabled(fields: &serde_json::Map<String, Value>) -> bool {
+    for flag in [
+        "enabled",
+        "is_enabled",
+        "can_use",
+        "accessible",
+        "available",
+        "is_available",
+    ] {
+        if let Some(value) = fields.get(flag)
+            && value.as_bool() != Some(true)
+        {
+            return false;
+        }
+    }
+    for flag in ["disabled", "is_disabled"] {
+        if let Some(value) = fields.get(flag)
+            && value.as_bool() != Some(false)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Plan {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub plan_key: String,
+    #[serde(default)]
+    pub usage_plan_features: Vec<Feature>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Feature {
+    pub name: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Model {
+    pub name: String,
+    pub external_key: String,
+    pub can_use: bool,
+    pub is_default_model: bool,
+    #[serde(default)]
+    pub is_default_free_model: bool,
+    pub description: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub allowed_condition_combinations: Vec<Vec<String>>,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub badges: Vec<String>,
+    #[serde(default)]
+    pub max_lengths: MaxLengths,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+impl Model {
+    /// Match Suno Web's `modelSupportsFeature`: the `custom` badge enables
+    /// Create-form features generally; otherwise the feature must be listed.
+    pub fn supports_web_feature(&self, feature: &str) -> bool {
+        self.badges.iter().any(|badge| badge == "custom")
+            || self.features.iter().any(|candidate| candidate == feature)
+    }
+
+    /// Match the current Web model helpers for task capabilities and the
+    /// exact active-condition combinations returned by billing info.
+    pub fn supports_web_task(&self, task: &str) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability == "all")
+            || self
+                .capabilities
+                .iter()
+                .any(|capability| capability == task)
+    }
+
+    pub fn supports_web_conditions(&self, conditions: &[&str]) -> bool {
+        if self.allowed_condition_combinations.is_empty() {
+            return supports_legacy_web_conditions(&self.external_key, conditions);
+        }
+        self.allowed_condition_combinations.iter().any(|allowed| {
+            allowed.len() == conditions.len()
+                && conditions
+                    .iter()
+                    .all(|condition| allowed.iter().any(|item| item == condition))
+        })
+    }
+}
+
+fn supports_legacy_web_conditions(model: &str, conditions: &[&str]) -> bool {
+    const BLUEJAY_OR_LATER: &[&str] = &[
+        "bluejay",
+        "crow",
+        "dodo",
+        "eagle",
+        "fenix",
+        "goose",
+        "hawk",
+        "ibis",
+        "chirp-custom",
+    ];
+    const AUK_OR_LATER: &[&str] = &[
+        "auk",
+        "bluejay",
+        "crow",
+        "dodo",
+        "eagle",
+        "fenix",
+        "goose",
+        "hawk",
+        "ibis",
+        "chirp-custom",
+    ];
+    const V35_OR_LATER: &[&str] = &[
+        "v3-5",
+        "v4",
+        "auk",
+        "bluejay",
+        "crow",
+        "dodo",
+        "eagle",
+        "fenix",
+        "goose",
+        "hawk",
+        "ibis",
+        "chirp-custom",
+    ];
+    const EXTEND_MODELS: &[&str] = &[
+        "v2",
+        "v3-0",
+        "v3-5",
+        "v4",
+        "auk",
+        "bluejay",
+        "crow",
+        "dodo",
+        "eagle",
+        "fenix",
+        "goose",
+        "hawk",
+        "ibis",
+        "chirp-custom",
+    ];
+
+    let model_matches = |allowed: &[&str]| allowed.iter().any(|part| model.contains(part));
+    let contains_all = |required: &[&str]| {
+        required
+            .iter()
+            .all(|required| conditions.contains(required))
+    };
+    let restrictions: &[(&[&str], &[&str])] = &[
+        (EXTEND_MODELS, &["extend"]),
+        (V35_OR_LATER, &["persona"]),
+        (V35_OR_LATER, &["cover"]),
+        (V35_OR_LATER, &["persona", "extend"]),
+        (BLUEJAY_OR_LATER, &["playlist"]),
+        (BLUEJAY_OR_LATER, &["underpaint"]),
+        (BLUEJAY_OR_LATER, &["overpaint"]),
+        (AUK_OR_LATER, &["persona", "cover"]),
+    ];
+
+    restrictions
+        .iter()
+        .all(|(allowed_models, required)| !contains_all(required) || model_matches(allowed_models))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct MaxLengths {
+    #[serde(default)]
+    pub title: u32,
+    #[serde(default)]
+    pub prompt: u32,
+    #[serde(default)]
+    pub tags: u32,
+    #[serde(default)]
+    pub negative_tags: u32,
+    #[serde(default)]
+    pub gpt_description_prompt: u32,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemasterModelInfo {
+    pub name: String,
+    pub external_key: String,
+    pub is_default_model: bool,
+    /// Preserve this legacy account field for raw JSON compatibility. Current
+    /// Web lists remaster models without using it as an eligibility gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_use: Option<bool>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BillingInfo, DownloadCreditPack, Model};
+
+    #[test]
+    fn billing_and_model_unknown_fields_round_trip_at_original_level() {
+        let billing: BillingInfo = serde_json::from_value(serde_json::json!({
+            "credits": 10,
+            "total_credits_left": 20,
+            "monthly_usage": 1,
+            "monthly_limit": 100,
+            "is_active": true,
+            "plan": {
+                "name": "Pro",
+                "plan_key": "pro",
+                "usage_plan_features": [],
+                "currency": "USD"
+            },
+            "models": [{
+                "name": "v5",
+                "external_key": "chirp-carp",
+                "can_use": true,
+                "is_default_model": true,
+                "description": "Current model",
+                "features": ["reuse_styles_lyrics"],
+                "badges": ["custom"],
+                "max_lengths": {"prompt": 5000, "duration": 480},
+                "capabilities": ["audio_upload"],
+                "allowed_condition_combinations": [["cover"]],
+                "major_version": 5
+            }],
+            "period": "monthly",
+            "renews_on": null,
+            "accessible_features": {"personas": true},
+            "download_usage": {
+                "current_period_downloads_limit": 20,
+                "current_period_downloads_used": 3,
+                "additional_download_remaining": 7,
+                "period_key": "2026-08"
+            },
+            "download_credit_packs": [{
+                "id": "pack-100",
+                "amount": 100,
+                "price_amount": 999,
+                "price_currency_code": "USD",
+                "price_usd": 9.99,
+                "campaign": "launch"
+            }],
+            "subscription_platform": "stripe"
+        }))
+        .expect("deserialize current billing response");
+
+        assert!(billing.models[0].supports_web_feature("sound"));
+        assert!(
+            billing
+                .accessible_features
+                .as_ref()
+                .expect("legacy feature object")
+                .contains("personas")
+        );
+        assert!(
+            !billing
+                .accessible_features
+                .as_ref()
+                .expect("legacy feature object")
+                .contains("remaster")
+        );
+        let usage = billing.download_usage.as_ref().expect("download usage");
+        assert_eq!(usage.current_period_downloads_limit, 20);
+        assert_eq!(usage.current_period_downloads_used, 3);
+        assert_eq!(usage.additional_download_remaining, 7);
+        let pack = &billing
+            .download_credit_packs
+            .as_ref()
+            .expect("download credit packs")[0];
+        assert_eq!(pack.id, "pack-100");
+        assert_eq!(pack.amount, 100);
+        assert_eq!(
+            serde_json::to_value(pack.price_amount.as_ref().expect("price amount"))
+                .expect("serialize numeric price"),
+            999
+        );
+        assert_eq!(pack.price_currency_code.as_deref(), Some("USD"));
+        assert_eq!(
+            pack.price_usd
+                .as_ref()
+                .expect("legacy USD price")
+                .to_string(),
+            "9.99"
+        );
+
+        let output = serde_json::to_value(billing).expect("serialize billing response");
+        assert_eq!(output["accessible_features"]["personas"], true);
+        assert_eq!(output["subscription_platform"], "stripe");
+        assert_eq!(output["plan"]["currency"], "USD");
+        assert_eq!(output["models"][0]["capabilities"][0], "audio_upload");
+        assert_eq!(
+            output["models"][0]["allowed_condition_combinations"][0][0],
+            "cover"
+        );
+        assert_eq!(output["models"][0]["features"][0], "reuse_styles_lyrics");
+        assert_eq!(output["models"][0]["badges"][0], "custom");
+        assert_eq!(output["models"][0]["major_version"], 5);
+        assert_eq!(output["models"][0]["max_lengths"]["duration"], 480);
+        assert_eq!(output["download_usage"]["period_key"], "2026-08");
+        assert_eq!(output["download_credit_packs"][0]["campaign"], "launch");
+        assert_eq!(output["download_credit_packs"][0]["price_amount"], 999);
+        assert_eq!(output["download_credit_packs"][0]["price_usd"], 9.99);
+        assert!(output.get("extra").is_none());
+    }
+
+    #[test]
+    fn billing_accepts_current_decimal_string_prices_without_changing_their_scale() {
+        // Only public credit-pack fields from the current billing shape are
+        // represented here; identifiers and account fields are synthetic.
+        let raw = serde_json::json!({
+            "credits": 10,
+            "total_credits_left": 10,
+            "monthly_usage": 0,
+            "monthly_limit": 100,
+            "is_active": true,
+            "plan": {"name": "Fixture", "plan_key": "fixture"},
+            "models": [],
+            "period": "monthly",
+            "download_credit_packs": [
+                {"id": "fixture-pack-1", "amount": 1, "price_amount": "2.99000", "price_currency_code": "USD", "price_usd": 0},
+                {"id": "fixture-pack-2", "amount": 3, "price_amount": "8.95000", "price_currency_code": "USD", "price_usd": 0},
+                {"id": "fixture-pack-3", "amount": 5, "price_amount": "14.95000", "price_currency_code": "USD", "price_usd": 0},
+                {"id": "fixture-pack-4", "amount": 10, "price_amount": "29.90000", "price_currency_code": "USD", "price_usd": 0}
+            ]
+        });
+        let billing: BillingInfo = serde_json::from_slice(
+            &serde_json::to_vec(&raw).expect("serialize sanitized billing fixture"),
+        )
+        .expect("decode current billing price shape");
+        let output = serde_json::to_value(billing).expect("serialize billing");
+        assert_eq!(
+            output["download_credit_packs"],
+            raw["download_credit_packs"]
+        );
+    }
+
+    #[test]
+    fn credit_pack_price_numbers_and_strings_preserve_exact_precision() {
+        fn decimal_parts(value: &str) -> (bool, String, i32) {
+            let (significand, exponent) = value
+                .split_once('e')
+                .or_else(|| value.split_once('E'))
+                .map_or((value, 0), |(significand, exponent)| {
+                    (
+                        significand,
+                        exponent.parse::<i32>().expect("decimal exponent"),
+                    )
+                });
+            let negative = significand.starts_with('-');
+            let unsigned = significand.strip_prefix('-').unwrap_or(significand);
+            let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+            let mut digits = format!("{integer}{fraction}")
+                .trim_start_matches('0')
+                .to_owned();
+            if digits.is_empty() {
+                return (false, "0".to_owned(), 0);
+            }
+            let significant_len = digits.trim_end_matches('0').len();
+            let trailing_zeroes = digits.len() - significant_len;
+            digits.truncate(significant_len);
+            let scale = exponent - i32::try_from(fraction.len()).expect("fraction length")
+                + i32::try_from(trailing_zeroes).expect("trailing zeroes");
+            (negative, digits, scale)
+        }
+
+        fn assert_exact_price(output: &serde_json::Value, wire: &str) {
+            if wire.starts_with('"') {
+                assert!(output.is_string());
+                assert_eq!(output.to_string(), wire);
+            } else {
+                assert!(output.is_number());
+                // Number -> Value may normalize the exponent spelling. Compare
+                // exact decimal digits and scale, never a floating-point value.
+                assert_eq!(decimal_parts(&output.to_string()), decimal_parts(wire));
+            }
+        }
+
+        for wire_amount in [
+            "999",
+            "9007199254740993",
+            "184467440737095516160000000001",
+            "2.99000",
+            "2.990000000000000000000000000001",
+            "0.000000000000000000000000000009",
+            r#""2.99000""#,
+            r#""184467440737095516160000000001.000000000009""#,
+            r#""-0.00000""#,
+        ] {
+            let raw = format!(r#"{{"id":"fixture-pack","amount":1,"price_amount":{wire_amount}}}"#);
+            let pack: DownloadCreditPack =
+                serde_json::from_str(&raw).expect("decode exact credit-pack price");
+            let output = serde_json::to_value(pack).expect("serialize exact credit-pack price");
+            assert_exact_price(&output["price_amount"], wire_amount);
+            let raw_value = serde_json::from_str(&raw).expect("decode raw pack as Value");
+            let via_value: DownloadCreditPack =
+                serde_json::from_value(raw_value).expect("decode exact pack through Value");
+            assert_exact_price(
+                &serde_json::to_value(via_value).expect("serialize exact pack through Value")["price_amount"],
+                wire_amount,
+            );
+            // The capabilities projection serializes through Value as well.
+            let reparsed: DownloadCreditPack =
+                serde_json::from_value(output).expect("deserialize exact price through Value");
+            assert_exact_price(
+                &serde_json::to_value(reparsed).expect("serialize price again")["price_amount"],
+                wire_amount,
+            );
+        }
+    }
+
+    #[test]
+    fn credit_pack_prices_reject_non_decimal_strings_and_structured_values() {
+        for invalid in [
+            serde_json::json!(""),
+            serde_json::json!("2."),
+            serde_json::json!(".99"),
+            serde_json::json!("2.9.9"),
+            serde_json::json!("+2.99"),
+            serde_json::json!(" 2.99"),
+            serde_json::json!("2.99 "),
+            serde_json::json!("1e2"),
+            serde_json::json!("NaN"),
+            serde_json::json!("Infinity"),
+            serde_json::json!("USD 2.99"),
+            serde_json::json!(true),
+            serde_json::json!([2, 99]),
+            serde_json::json!({"amount": "2.99000"}),
+        ] {
+            let raw = serde_json::json!({
+                "id": "fixture-pack",
+                "amount": 1,
+                "price_amount": invalid,
+            });
+            assert!(
+                serde_json::from_value::<DownloadCreditPack>(raw).is_err(),
+                "unexpectedly accepted price: {invalid}"
+            );
+        }
+        for optional in [
+            serde_json::json!({"id": "fixture-pack", "amount": 1}),
+            serde_json::json!({"id": "fixture-pack", "amount": 1, "price_amount": null}),
+        ] {
+            let pack: DownloadCreditPack =
+                serde_json::from_value(optional).expect("accept optional price");
+            assert!(pack.price_amount.is_none());
+        }
+    }
+
+    #[test]
+    fn accessible_features_support_current_string_arrays_and_preserve_unknown_entries() {
+        let billing: BillingInfo = serde_json::from_value(serde_json::json!({
+            "credits": 10,
+            "total_credits_left": 20,
+            "monthly_usage": 1,
+            "monthly_limit": 100,
+            "is_active": true,
+            "plan": {
+                "name": "Pro",
+                "plan_key": "pro",
+                "usage_plan_features": []
+            },
+            "models": [],
+            "period": "monthly",
+            "renews_on": null,
+            "accessible_features": [
+                "remaster",
+                {"name": "future_feature", "minimum_tier": "pro"},
+                {"name": "enabled_feature", "enabled": true},
+                {"name": "disabled_feature", "enabled": false},
+                {"name": "blocked_feature", "disabled": true},
+                {"name": "malformed_feature", "can_use": "yes"},
+                42
+            ]
+        }))
+        .expect("deserialize current feature list");
+
+        let features = billing
+            .accessible_features
+            .as_ref()
+            .expect("accessible features");
+        assert!(features.contains("remaster"));
+        assert!(features.contains("future_feature"));
+        assert!(features.contains("enabled_feature"));
+        assert!(!features.contains("disabled_feature"));
+        assert!(!features.contains("blocked_feature"));
+        assert!(!features.contains("malformed_feature"));
+        assert!(!features.contains("missing"));
+        assert_eq!(
+            features.enabled_names().collect::<Vec<_>>(),
+            vec!["remaster", "future_feature", "enabled_feature"]
+        );
+
+        let output = serde_json::to_value(billing).expect("serialize feature list");
+        assert_eq!(output["accessible_features"][6], 42);
+        assert_eq!(output["accessible_features"][1]["minimum_tier"], "pro");
+    }
+
+    #[test]
+    fn model_feature_support_matches_the_current_web_helper() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "name": "custom",
+            "external_key": "custom-model",
+            "can_use": true,
+            "is_default_model": false,
+            "description": "fixture",
+            "badges": ["custom"]
+        }))
+        .expect("deserialize model");
+
+        assert!(model.supports_web_feature("create_control_sliders"));
+        assert!(model.supports_web_feature("sound"));
+        assert!(!model.supports_web_task("cover"));
+
+        let feature_model: Model = serde_json::from_value(serde_json::json!({
+            "name": "feature",
+            "external_key": "feature-model",
+            "can_use": true,
+            "is_default_model": false,
+            "description": "fixture",
+            "features": ["create_control_sliders"]
+        }))
+        .expect("deserialize feature model");
+
+        assert!(feature_model.supports_web_feature("create_control_sliders"));
+        assert!(!feature_model.supports_web_feature("sound"));
+
+        let capable_model: Model = serde_json::from_value(serde_json::json!({
+            "name": "current",
+            "external_key": "current-model",
+            "can_use": true,
+            "is_default_model": true,
+            "description": "fixture",
+            "capabilities": ["all"],
+            "allowed_condition_combinations": [["cover"], ["playlist"]]
+        }))
+        .expect("deserialize capable model");
+        assert!(capable_model.supports_web_task("cover"));
+        assert!(capable_model.supports_web_conditions(&["cover"]));
+        assert!(!capable_model.supports_web_conditions(&["extend"]));
+
+        let legacy_v3: Model = serde_json::from_value(serde_json::json!({
+            "name": "v3",
+            "external_key": "chirp-v3-0",
+            "can_use": true,
+            "is_default_model": false,
+            "description": "legacy fallback fixture",
+            "capabilities": ["all"]
+        }))
+        .expect("deserialize legacy model");
+        assert!(legacy_v3.supports_web_conditions(&["extend"]));
+        assert!(!legacy_v3.supports_web_conditions(&["cover"]));
+        assert!(!legacy_v3.supports_web_conditions(&["playlist"]));
+
+        let bluejay: Model = serde_json::from_value(serde_json::json!({
+            "name": "v4.5+",
+            "external_key": "chirp-bluejay",
+            "can_use": true,
+            "is_default_model": false,
+            "description": "legacy fallback fixture",
+            "capabilities": ["all"]
+        }))
+        .expect("deserialize bluejay model");
+        assert!(bluejay.supports_web_conditions(&["cover"]));
+        assert!(bluejay.supports_web_conditions(&["playlist"]));
+    }
+
+    #[test]
+    fn null_allowed_condition_combinations_matches_the_web_empty_fallback() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "name": "v4.5+",
+            "external_key": "chirp-bluejay",
+            "can_use": true,
+            "is_default_model": true,
+            "description": "nullable current-field fixture",
+            "capabilities": ["all"],
+            "allowed_condition_combinations": null
+        }))
+        .expect("Web treats null allowed conditions as an empty list");
+
+        assert!(model.allowed_condition_combinations.is_empty());
+        assert!(model.supports_web_conditions(&["playlist"]));
+    }
+}

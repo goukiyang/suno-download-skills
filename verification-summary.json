@@ -1,0 +1,36 @@
+{
+  "package_version": "1.0.0",
+  "portable_tool_version": "0.4.0-suno-studio.2",
+  "status": "offline_verified",
+  "actual_account_requests": 0,
+  "actual_downloads": 0,
+  "offline_checks": {
+    "unit_test_groups": 4,
+    "unit_result": "4 passed, 0 failed; synthetic loopback GET fixtures only",
+    "cli_file_and_syntax_checks": 20,
+    "identity_and_credits": "mock successful owner/Premier/complete billing; wrong owner, missing usage and changed balance rejected",
+    "download_contract": "ready, processing polling, 403, invalid WAV and duplicate target protected; no Library authorize or generation; no auth header forwarded to file transport",
+    "profile_guard": "explicit single absolute canonical non-symlink directory only; no scan/launch; imported auth ephemeral until owner verification; different/unknown existing session not replaced",
+    "audio_checker": "synthetic PCM fixture complete decode; wrong duration rejected; existing archive file preserved",
+    "original_download_contract_unchanged": true,
+    "binary_build_paths_removed": true,
+    "dependencies_license_records": 301,
+    "dependency_licenses_installed_with_primary_skill": true,
+    "recursive_skill_discovery_count": 3,
+    "upstream_template": "renamed to non-SKILL.md source asset with include_str matched; licensed bytes unchanged; offline full build verified"
+  },
+  "historical_real_evidence": {
+    "tool_version": "0.4.0-suno-studio.1",
+    "scope": "One entitled Premier account, self-owned clips only",
+    "initial": "3 distinct songs, 4 exports; repeat SHA identical; complete decoding and before/after billing equal",
+    "later": "46 existing-song completion batch and multiple production batches; latest single-category 2 originals verified with unchanged per-download billing",
+    "privacy": "Only anonymous summaries included. No real account, song IDs/titles/audio or private logs distributed."
+  },
+  "limits": [
+    "Portable .2 real login/download on a colleague account is not yet tested.",
+    "Native Studio tool is WAV-only; no MP3 flag or normal Library fallback.",
+    "Optional browser helper lacks independent live successful acceptance.",
+    "Decode/silent playback is not music listening, vocal or quality acceptance.",
+    "Actual install-to-isolated-directory and ZIP integrity outcomes are recorded by the distributor in the frozen review proof; no account tests implied."
+  ]
+}
